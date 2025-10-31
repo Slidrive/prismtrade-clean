@@ -24,4 +24,4 @@ COPY . .
 EXPOSE 5000
 
 # Start app
-CMD gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 4
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT} --timeout 120 --workers 4"]
