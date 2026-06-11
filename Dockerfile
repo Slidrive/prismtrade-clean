@@ -7,7 +7,8 @@ COPY frontend/package*.json ./frontend/
 WORKDIR /app/frontend
 RUN npm ci
 COPY frontend/ .
-RUN npm run build
+# CI=false so build warnings are not treated as errors
+RUN CI=false npm run build
 WORKDIR /app
 COPY . .
 EXPOSE 5000

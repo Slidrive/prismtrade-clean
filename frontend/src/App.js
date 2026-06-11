@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
@@ -6,6 +6,8 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import Strategies from './pages/Strategies';
 import StrategyForm from './pages/StrategyForm';
+import Trading from './pages/Trading';
+import ApiKeys from './pages/ApiKeys';
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -23,6 +25,8 @@ function App() {
           <Route path='/' element={<PrivateRoute><Dashboard /></PrivateRoute>} />
           <Route path='/strategies' element={<PrivateRoute><Strategies /></PrivateRoute>} />
           <Route path='/strategies/new' element={<PrivateRoute><StrategyForm /></PrivateRoute>} />
+          <Route path='/trading' element={<PrivateRoute><Trading /></PrivateRoute>} />
+          <Route path='/api-keys' element={<PrivateRoute><ApiKeys /></PrivateRoute>} />
         </Routes>
       </Router>
     </AuthProvider>
