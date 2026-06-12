@@ -1,19 +1,29 @@
-﻿from passlib.context import CryptContext
-from jose import JWTError, jwt
+import bcrypt
+import jwt
 from datetime import datetime, timedelta
 from typing import Optional
 import os
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
+# bcrypt only hashes the first 72 bytes of a password
+_BCRYPT_MAX_BYTES = 72
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    password_bytes = password.encode('utf-8')[:_BCRYPT_MAX_BYTES]
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode('utf-8')
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        password_bytes = plain_password.encode('utf-8')[:_BCRYPT_MAX_BYTES]
+        return bcrypt.checkpw(password_bytes, hashed_password.encode('utf-8'))
+    except (ValueError, TypeError):
+        return False
+
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
@@ -24,11 +34,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
 def decode_access_token(token: str):
     try:
         return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    except jwt.PyJWTError:
         return None
+
 
 def get_user_from_token(token: str):
     payload = decode_access_token(token)
@@ -37,4 +49,7 @@ def get_user_from_token(token: str):
     user_id = payload.get("sub")
     if user_id is None:
         return None
-    return {"user_id": int(user_id)}
+    try:
+        return {"user_id": int(user_id)}
+    except (ValueError, TypeError):
+        return None

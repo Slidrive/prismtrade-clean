@@ -3,7 +3,7 @@ from trading_engine import TradingEngine
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from database import init_db, DBSession
-from models import User, Strategy, Backtest, Trade, StrategyStatus, TradingMode, APIKey
+from models import User, Strategy, Backtest, Trade, StrategyStatus, TradingMode, TradeStatus, BacktestStatus, APIKey
 from auth import hash_password, verify_password, create_access_token, get_user_from_token
 from datetime import datetime
 from api_key_manager import key_manager
@@ -278,6 +278,188 @@ def delete_strategy(strategy_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/strategies/<int:strategy_id>', methods=['PUT'])
+def update_strategy(strategy_id):
+    try:
+        auth_header = request.headers.get('Authorization')
+        user = get_current_user(auth_header)
+
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        data = request.json or {}
+
+        with DBSession() as db:
+            strategy = db.query(Strategy).filter(
+                Strategy.id == strategy_id,
+                Strategy.user_id == user.id
+            ).first()
+
+            if not strategy:
+                return jsonify({'error': 'Strategy not found'}), 404
+
+            for field in ['name', 'description', 'exchange', 'trading_pair',
+                          'timeframe', 'parameters', 'stop_loss_pct', 'take_profit_pct']:
+                if field in data:
+                    setattr(strategy, field, data[field])
+
+            db.commit()
+            return jsonify({'id': strategy.id, 'message': 'Strategy updated'}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/strategies/<int:strategy_id>/start', methods=['POST'])
+def start_strategy(strategy_id):
+    return _set_strategy_status(strategy_id, StrategyStatus.ACTIVE)
+
+@app.route('/api/strategies/<int:strategy_id>/stop', methods=['POST'])
+def stop_strategy(strategy_id):
+    return _set_strategy_status(strategy_id, StrategyStatus.PAUSED)
+
+def _set_strategy_status(strategy_id, status):
+    try:
+        auth_header = request.headers.get('Authorization')
+        user = get_current_user(auth_header)
+
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        with DBSession() as db:
+            strategy = db.query(Strategy).filter(
+                Strategy.id == strategy_id,
+                Strategy.user_id == user.id
+            ).first()
+
+            if not strategy:
+                return jsonify({'error': 'Strategy not found'}), 404
+
+            strategy.status = status
+            db.commit()
+            return jsonify({'id': strategy.id, 'status': status.value}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ==================== BACKTESTING ENDPOINTS ====================
+
+# Map common trading pairs to CoinGecko coin ids (used for free historical data)
+COINGECKO_IDS = {
+    'BTC': 'bitcoin', 'ETH': 'ethereum', 'SOL': 'solana', 'BNB': 'binancecoin',
+    'XRP': 'ripple', 'ADA': 'cardano', 'DOGE': 'dogecoin', 'AVAX': 'avalanche-2',
+    'DOT': 'polkadot', 'MATIC': 'matic-network', 'LTC': 'litecoin', 'LINK': 'chainlink',
+}
+
+def _pair_to_coingecko_id(trading_pair):
+    base = (trading_pair or 'BTC/USDT').split('/')[0].upper()
+    return COINGECKO_IDS.get(base, 'bitcoin')
+
+@app.route('/api/strategies/<int:strategy_id>/backtest', methods=['POST'])
+def run_strategy_backtest(strategy_id):
+    try:
+        auth_header = request.headers.get('Authorization')
+        user = get_current_user(auth_header)
+
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        data = request.json or {}
+        days = int(data.get('days', 30))
+        initial_capital = float(data.get('initial_capital', 10000))
+
+        with DBSession() as db:
+            strategy = db.query(Strategy).filter(
+                Strategy.id == strategy_id,
+                Strategy.user_id == user.id
+            ).first()
+
+            if not strategy:
+                return jsonify({'error': 'Strategy not found'}), 404
+
+            params = strategy.parameters or {}
+            fast_ma = int(params.get('fast_ma', 10))
+            slow_ma = int(params.get('slow_ma', 30))
+            coin_id = _pair_to_coingecko_id(strategy.trading_pair)
+
+            # Lazy imports so the app boots even if pandas isn't installed
+            from market_data import MarketDataProvider
+            from backtesting import BacktestEngine, simple_ma_crossover_strategy, OrderSide
+
+            provider = MarketDataProvider()
+            df = provider.get_ohlcv(coin_id, days=days)
+            df = simple_ma_crossover_strategy(df, fast_period=fast_ma, slow_period=slow_ma)
+
+            engine = BacktestEngine(initial_capital=initial_capital, fee_pct=0.001, max_positions=1)
+            for _, row in df.iterrows():
+                timestamp = row['timestamp']
+                price = row['close']
+                if row['position'] == 2 and engine.can_open_position():
+                    engine.open_position(timestamp, price, OrderSide.BUY, risk_pct=10)
+                elif row['position'] == -2 and len(engine.positions) > 0:
+                    engine.close_position(timestamp, price)
+                engine.update_equity(timestamp, price)
+            if engine.positions:
+                engine.close_position(df.iloc[-1]['timestamp'], df.iloc[-1]['close'])
+
+            stats = engine.get_stats()
+
+            # Persist the backtest result
+            backtest = Backtest(
+                user_id=user.id,
+                strategy_id=strategy.id,
+                start_date=datetime.utcnow(),
+                end_date=datetime.utcnow(),
+                initial_balance=initial_capital,
+                status=BacktestStatus.COMPLETED,
+                final_balance=stats.get('final_capital', initial_capital),
+                total_return_pct=stats.get('total_return_pct', 0),
+                total_trades=stats.get('total_trades', 0),
+                winning_trades=stats.get('winning_trades', 0),
+                losing_trades=stats.get('losing_trades', 0),
+                win_rate=stats.get('win_rate', 0),
+                profit_factor=stats.get('profit_factor', 0),
+                sharpe_ratio=stats.get('sharpe_ratio', 0),
+                max_drawdown=stats.get('max_drawdown_pct', 0),
+                results_data=stats,
+                completed_at=datetime.utcnow()
+            )
+            db.add(backtest)
+            db.commit()
+
+            return jsonify(stats), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/strategies/<int:strategy_id>/backtests', methods=['GET'])
+def get_strategy_backtests(strategy_id):
+    try:
+        auth_header = request.headers.get('Authorization')
+        user = get_current_user(auth_header)
+
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        with DBSession() as db:
+            backtests = db.query(Backtest).filter(
+                Backtest.strategy_id == strategy_id,
+                Backtest.user_id == user.id
+            ).order_by(Backtest.created_at.desc()).all()
+
+            return jsonify([{
+                'id': b.id,
+                'total_return_pct': b.total_return_pct,
+                'win_rate': b.win_rate,
+                'total_trades': b.total_trades,
+                'profit_factor': b.profit_factor,
+                'max_drawdown_pct': b.max_drawdown,
+                'sharpe_ratio': b.sharpe_ratio,
+                'created_at': b.created_at.isoformat() if b.created_at else None
+            } for b in backtests]), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ==================== API KEY MANAGEMENT ====================
 
 @app.route('/api/api-keys/store', methods=['POST'])
@@ -535,6 +717,46 @@ def get_trade_history():
         history = engine.get_trade_history(limit=limit)
         
         return jsonify({'trades': history}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ==================== TRADES (DATABASE) ====================
+
+@app.route('/api/trades', methods=['GET'])
+def get_trades():
+    """Return the user's trades straight from the database.
+
+    Unlike /api/trading/history this does not require a live exchange
+    connection, so the dashboard works before any API keys are added.
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+        user = get_current_user(auth_header)
+        if not user:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        limit = request.args.get('limit', 50, type=int)
+
+        with DBSession() as db:
+            trades = db.query(Trade).filter(
+                Trade.user_id == user.id
+            ).order_by(Trade.entry_time.desc()).limit(limit).all()
+
+            return jsonify([{
+                'id': t.id,
+                'symbol': t.trading_pair,
+                'side': t.side,
+                'entry_price': t.entry_price,
+                'exit_price': t.exit_price,
+                'amount': t.entry_amount,
+                'pnl': t.profit_loss or 0,
+                'pnl_pct': t.profit_loss_pct or 0,
+                'status': t.status.value,
+                'trading_mode': t.trading_mode.value,
+                'entry_time': t.entry_time.isoformat() if t.entry_time else None,
+                'exit_time': t.exit_time.isoformat() if t.exit_time else None
+            } for t in trades]), 200
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

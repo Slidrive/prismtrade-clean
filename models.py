@@ -139,7 +139,7 @@ class Trade(Base):
     __tablename__ = 'trades'
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    strategy_id = Column(Integer, ForeignKey('strategies.id'), nullable=False)
+    strategy_id = Column(Integer, ForeignKey('strategies.id'), nullable=True)
     exchange_order_id = Column(String(100))
     trading_pair = Column(String(20), nullable=False)
     side = Column(String(10), nullable=False)

@@ -1,4 +1,4 @@
-﻿import axios from 'axios';
+import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -43,7 +43,23 @@ export const backtestAPI = {
 
 export const tradeAPI = {
   getAll: (params) => apiClient.get('/api/trades', { params }),
-  getForStrategy: (strategyId) => apiClient.get(`/api/strategies/${strategyId}/trades`),
+};
+
+export const tradingAPI = {
+  getBalance: (exchange) => apiClient.get('/api/trading/balance', { params: { exchange } }),
+  getTicker: (symbol, exchange) => apiClient.get(`/api/trading/ticker/${encodeURIComponent(symbol)}`, { params: { exchange } }),
+  buy: (data) => apiClient.post('/api/trading/buy', data),
+  sell: (data) => apiClient.post('/api/trading/sell', data),
+  getPositions: (exchange) => apiClient.get('/api/trading/positions', { params: { exchange } }),
+  closePosition: (tradeId, exchange) => apiClient.post(`/api/trading/positions/${tradeId}/close`, null, { params: { exchange } }),
+  getHistory: (exchange, limit) => apiClient.get('/api/trading/history', { params: { exchange, limit } }),
+};
+
+export const apiKeysAPI = {
+  list: () => apiClient.get('/api/api-keys/list'),
+  store: (data) => apiClient.post('/api/api-keys/store', data),
+  delete: (id) => apiClient.delete(`/api/api-keys/${id}`),
+  testConnection: (data) => apiClient.post('/api/api-keys/test-connection', data),
 };
 
 export default apiClient;
